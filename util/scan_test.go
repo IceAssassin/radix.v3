@@ -3,10 +3,9 @@ package util
 import (
 	"strconv"
 	. "testing"
-
 	"github.com/levenlabs/golib/testutil"
-	"github.com/mediocregopher/radix.v2/cluster"
-	"github.com/mediocregopher/radix.v2/redis"
+	"../cluster"
+	"../redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

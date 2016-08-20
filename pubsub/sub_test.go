@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/mediocregopher/radix.v2/redis"
+	"../redis"
 )
 
 func TestSubscribe(t *testing.T) {

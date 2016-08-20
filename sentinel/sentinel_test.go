@@ -5,8 +5,7 @@ import (
 	"encoding/hex"
 	. "testing"
 	"time"
-
-	"github.com/mediocregopher/radix.v2/redis"
+	"../redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

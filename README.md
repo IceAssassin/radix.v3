@@ -89,6 +89,10 @@ Here are some of the major changes since V1:
 
 * More functionality in cluster
 
+##TO-DO: V3
+
+* add future support
+
 ## Copyright and licensing
 
 Unless otherwise noted, the source files are distributed under the *MIT License*

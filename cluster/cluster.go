@@ -18,9 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/mediocregopher/radix.v2/pool"
-	"github.com/mediocregopher/radix.v2/redis"
+	"../pool"
+	"../redis"
 )
 
 const numSlots = 16384

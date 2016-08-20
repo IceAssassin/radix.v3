@@ -6,8 +6,7 @@ import (
 	"io"
 	"log"
 	"time"
-
-	"github.com/mediocregopher/radix.v2/cluster"
+	"../../cluster"
 )
 
 func randString() string {

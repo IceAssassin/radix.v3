@@ -7,9 +7,8 @@ import (
 	. "testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/mediocregopher/radix.v2/pool"
-	"github.com/mediocregopher/radix.v2/redis"
+	"../pool"
+	"../redis"
 )
 
 // These tests assume there is a cluster running on ports 7000 and 7001, with

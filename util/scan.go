@@ -3,9 +3,8 @@ package util
 import (
 	"errors"
 	"strings"
-
-	"github.com/mediocregopher/radix.v2/cluster"
-	"github.com/mediocregopher/radix.v2/redis"
+	"../cluster"
+	"../redis"
 )
 
 // ScanOpts are various parameters which can be passed into ScanWithOpts. Some
