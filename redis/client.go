@@ -7,6 +7,7 @@ import (
 	"net"
 	"reflect"
 	"time"
+	"bufio"
 )
 
 // ErrPipelineEmpty is returned from PipeResp() to indicate that all commands
@@ -16,7 +17,6 @@ var ErrPipelineEmpty = errors.New("pipeline queue empty")
 // Client describes a Redis client.
 type Client struct {
 	conn         net.Conn
-	respReader   *RespReader
 	timeout      time.Duration
 	pending      []request
 	writeScratch []byte
@@ -34,6 +34,9 @@ type Client struct {
 	// level error, e.g. a timeout, disconnect, etc... Close is automatically
 	// called on the client when it encounters a network error
 	LastCritical error
+	readChan chan[]byte
+	writeChan chan []byte
+	respChan chan *Resp
 }
 
 // request describes a client's request to the redis server
@@ -52,9 +55,8 @@ func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
 	}
 
 	completed := make([]*Resp, 0, 10)
-	return &Client{
+	client := &Client{
 		conn:          conn,
-		respReader:    NewRespReader(conn),
 		timeout:       timeout,
 		writeScratch:  make([]byte, 0, 128),
 		writeBuf:      bytes.NewBuffer(make([]byte, 0, 128)),
@@ -62,12 +64,62 @@ func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
 		completedHead: completed,
 		Network:       network,
 		Addr:          addr,
-	}, nil
+		readChan: 	make(chan []byte, 1024),
+		writeChan: 	make(chan []byte, 1024),
+		respChan: 	make(chan *Resp, 1024),
+
+	}
+	client.BeginTask()
+	return client, nil
 }
 
 // Dial connects to the given Redis server.
 func Dial(network, addr string) (*Client, error) {
 	return DialTimeout(network, addr, time.Duration(0))
+}
+
+func (c *Client) BeginTask() {
+	go c.readProcess(c.readChan, c.conn)
+	go c.writeProcess(c.writeChan, c.conn)
+	go c.respProcess(c.readChan, c.respChan)
+}
+
+func (c *Client) respProcess(recv chan[]byte, out chan *Resp) {
+	process := NewRespReader(recv, out)
+	process.beginTask()
+}
+
+func (c *Client) readProcess(read chan []byte, conn net.Conn) {
+	defer fmt.Println("readProcess exist")
+	reader := bufio.NewReaderSize(conn, 8192)
+	buffer := make([]byte, 8192)
+	for {
+		size, err := reader.Read(buffer)
+		if err != nil {
+			return
+		}
+		send := []byte{}
+		send = append(buffer[0:size])
+		read <- send
+	}
+}
+
+func (c *Client) writeProcess(write chan[]byte, conn net.Conn) {
+	defer fmt.Println("writeProcess exist")
+
+	maxPending := 100
+	for {
+		send := <- write
+		remain := len(write)
+		for i := 0; i < remain && i < maxPending; i++ {
+			left := <- write
+			send = append(send, left...)
+		}
+		size, err := conn.Write(send)
+		if err != nil && size != len(send) {
+			return
+		}
+	}
 }
 
 // Close closes the connection.
@@ -81,7 +133,8 @@ func (c *Client) Cmd(cmd string, args ...interface{}) *Resp {
 	if err != nil {
 		return newRespIOErr(err)
 	}
-	return c.ReadResp()
+	return nil
+	//return c.ReadResp()
 }
 
 // PipeAppend adds the given call to the pipeline queue.
@@ -143,21 +196,17 @@ func (c *Client) PipeClear() (int, int) {
 // Note: this is a more low-level function, you really shouldn't have to
 // actually use it unless you're writing your own pub/sub code
 func (c *Client) ReadResp() *Resp {
-	if c.timeout != 0 {
-		c.conn.SetReadDeadline(time.Now().Add(c.timeout))
-	}
-	r := c.respReader.Read()
-	if r.IsType(IOErr) {
-		c.LastCritical = r.Err
-		c.Close()
-	}
-	return r
+	//if c.timeout != 0 {
+	//	c.conn.SetReadDeadline(time.Now().Add(c.timeout))
+	//}
+	return <-c.respChan
 }
 
 func (c *Client) writeRequest(requests ...request) error {
-	if c.timeout != 0 {
-		c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
-	}
+	//if c.timeout != 0 {
+	//	c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	//}
+
 	var err error
 outer:
 	for i := range requests {
@@ -180,9 +229,12 @@ outer:
 			}
 		}
 
-		if _, err = c.writeBuf.WriteTo(c.conn); err != nil {
-			break
-		}
+		send := c.writeBuf.Bytes()
+		c.writeChan <- send
+
+		//if _, err = c.writeBuf.WriteTo(c.conn); err != nil {
+		//	break
+		//}
 	}
 	if err != nil {
 		c.LastCritical = err

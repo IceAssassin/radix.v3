@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -111,138 +110,130 @@ func newRespIOErr(err error) *Resp {
 // RespReader is a wrapper around an io.Reader which will read Resp messages off
 // of the io.Reader
 type RespReader struct {
-	r *bufio.Reader
+	data chan []byte
+	resp chan *Resp
+	wait []byte
 }
 
 // NewRespReader creates and returns a new RespReader which will read from the
 // given io.Reader. Once passed in the io.Reader shouldn't be read from by any
 // other processes
-func NewRespReader(r io.Reader) *RespReader {
-	br, ok := r.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(r)
+func NewRespReader(d chan []byte, r chan *Resp)  *RespReader{
+	return &RespReader{ data:d, resp:r}
+}
+
+func (rr *RespReader) readLine(begin int, delimEnd  byte) []byte {
+	recv := <- rr.data
+	rr.wait = append(rr.wait, recv...)
+	for i := range rr.wait[begin:] {
+		//fmt.Println("check pos", i, rr.wait[i], delimEnd, string(rr.wait[i]), string(delimEnd), delim[0], delim[1])
+		if rr.wait[i] == delimEnd {
+			n := begin+i +1 // the i begin with 0, the size begin with i
+			ret := make([]byte, n)
+			copy(ret, rr.wait[0:n])
+			rr.wait = rr.wait[n:]
+			fmt.Println("ret line is", string(ret))
+			return ret
+		}
 	}
-	return &RespReader{br}
+	nextBegin := len(rr.wait)
+	return rr.readLine(nextBegin, delimEnd)
+}
+
+func (rr *RespReader) beginTask()  {
+	defer fmt.Println("respReader task exist")
+
+	for {
+		resp, err := rr.readResp()
+		if err != nil {
+			fmt.Println("resp error with", resp, err)
+		}
+		rr.resp <- resp
+	}
+}
+
+func (rr *RespReader) readResp() (*Resp, error) {
+	line := rr.readLine(0, delimEnd)
+	fmt.Println("read line is", string(line), "len", len(line))
+	switch line[0] {
+	case simpleStrPrefix[0]:
+		return rr.readSimpleStr(line)
+	case errPrefix[0]:
+		return rr.readError(line)
+	case intPrefix[0]:
+		return rr.readInt(line)
+	case bulkStrPrefix[0]:
+		return rr.readBulkStr(line)
+	case arrayPrefix[0]:
+		return rr.readArray(line)
+	default:
+		return &Resp{}, errBadType
+	}
 }
 
 // ReadResp attempts to read a message object from the given io.Reader, parse
 // it, and return a Resp representing it
-func (rr *RespReader) Read() *Resp {
-	res, err := bufioReadResp(rr.r)
-	if err != nil {
-		res = Resp{typ: IOErr, val: err, Err: err}
-	}
-	return &res
+
+func (rr *RespReader) readSimpleStr(line []byte) (*Resp, error){
+	r := &Resp{typ: SimpleStr, val: line[1 : len(line)-2]}
+	return r, nil
 }
 
-func bufioReadResp(r *bufio.Reader) (Resp, error) {
-	b, err := r.Peek(1)
-	if err != nil {
-		return Resp{}, err
-	}
-	switch b[0] {
-	case simpleStrPrefix[0]:
-		return readSimpleStr(r)
-	case errPrefix[0]:
-		return readError(r)
-	case intPrefix[0]:
-		return readInt(r)
-	case bulkStrPrefix[0]:
-		return readBulkStr(r)
-	case arrayPrefix[0]:
-		return readArray(r)
-	default:
-		return Resp{}, errBadType
-	}
+func (rr *RespReader) readError(line []byte) (*Resp, error){
+	err := errors.New(string(line[1 : len(line)-2]))
+	r := &Resp{typ: AppErr, val: err, Err: err}
+	return r, nil
 }
 
-func readSimpleStr(r *bufio.Reader) (Resp, error) {
-	b, err := r.ReadBytes(delimEnd)
+func (rr *RespReader) readInt(line []byte) (*Resp, error) {
+	i, err := strconv.ParseInt(string(line[1:len(line)-2]), 10, 64)
 	if err != nil {
-		return Resp{}, err
+		return &Resp{}, errParse
 	}
-	return Resp{typ: SimpleStr, val: b[1 : len(b)-2]}, nil
+	r := &Resp{typ: Int, val: i}
+	return r, nil
 }
 
-func readError(r *bufio.Reader) (Resp, error) {
-	b, err := r.ReadBytes(delimEnd)
+func (rr *RespReader) readBulkStr(line []byte) (*Resp, error) {
+	size, err := strconv.ParseInt(string(line[1:len(line)-2]), 10, 64)
 	if err != nil {
-		return Resp{}, err
-	}
-	err = errors.New(string(b[1 : len(b)-2]))
-	return Resp{typ: AppErr, val: err, Err: err}, nil
-}
-
-func readInt(r *bufio.Reader) (Resp, error) {
-	b, err := r.ReadBytes(delimEnd)
-	if err != nil {
-		return Resp{}, err
-	}
-	i, err := strconv.ParseInt(string(b[1:len(b)-2]), 10, 64)
-	if err != nil {
-		return Resp{}, errParse
-	}
-	return Resp{typ: Int, val: i}, nil
-}
-
-func readBulkStr(r *bufio.Reader) (Resp, error) {
-	b, err := r.ReadBytes(delimEnd)
-	if err != nil {
-		return Resp{}, err
-	}
-	size, err := strconv.ParseInt(string(b[1:len(b)-2]), 10, 64)
-	if err != nil {
-		return Resp{}, errParse
+		return &Resp{}, errParse
 	}
 	if size < 0 {
-		return Resp{typ: Nil}, nil
+		return &Resp{typ: Nil}, nil
 	}
-	total := make([]byte, size)
+	total := make([]byte, size+2) // extra 2 size for \r\n
 	b2 := total
 	var n int
+
 	for len(b2) > 0 {
-		n, err = r.Read(b2)
-		if err != nil {
-			return Resp{}, err
-		}
+		newLine := rr.readLine(0, delimEnd)
+		copy(total[n:], newLine)
+		n += len(newLine)
 		b2 = b2[n:]
 	}
-
-	// There's a hanging \r\n there, gotta read past it
-	trail := make([]byte, 2)
-	for i := 0; i < 2; i++ {
-		c, err := r.ReadByte()
-		if err != nil {
-			return Resp{}, err
-		}
-		trail[i] = c
-	}
-
-	return Resp{typ: BulkStr, val: total}, nil
+	r := &Resp{typ: BulkStr, val: total[0:len(total)-2]}
+	return r, nil
 }
 
-func readArray(r *bufio.Reader) (Resp, error) {
-	b, err := r.ReadBytes(delimEnd)
+func (rr *RespReader) readArray(line []byte) (*Resp, error){
+	size, err := strconv.ParseInt(string(line[1:len(line)-2]), 10, 64)
 	if err != nil {
-		return Resp{}, err
-	}
-	size, err := strconv.ParseInt(string(b[1:len(b)-2]), 10, 64)
-	if err != nil {
-		return Resp{}, errParse
+		return &Resp{}, errParse
 	}
 	if size < 0 {
-		return Resp{typ: Nil}, nil
+		return &Resp{typ: Nil}, nil
 	}
 
 	arr := make([]Resp, size)
 	for i := range arr {
-		m, err := bufioReadResp(r)
+		m, err := rr.readResp()
 		if err != nil {
-			return Resp{}, err
+			return &Resp{}, err
 		}
-		arr[i] = m
+		arr[i] = *m
 	}
-	return Resp{typ: Array, val: arr}, nil
+	return &Resp{typ: Array, val: arr}, nil
 }
 
 // IsType returns whether or or not the reply is of a given type
