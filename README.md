@@ -98,6 +98,9 @@ Here are some of the major changes since V1:
 
 * a toy program show the FCmd usage, and the redis limit
 
+* qq group support 376389675
+
+
 ## Copyright and licensing
 
 Unless otherwise noted, the source files are distributed under the *MIT License*
