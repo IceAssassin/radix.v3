@@ -37,11 +37,11 @@ small, single-purpose packages for ease of use.
 
 ## Installation
 
-    go get github.com/mediocregopher/radix.v2/...
+    go get github.com/Tsiannian/radix.v3/...
 
 ## Testing
 
-    go test github.com/mediocregopher/radix.v2/...
+    go test github.com/Tsiannian/radix.v3/...
 
 The test action assumes you have the following running:
 
@@ -98,9 +98,11 @@ Here are some of the major changes since V1:
 
 * a toy program show the FCmd usage, and the redis limit
 
-![test_host](./res/test_host.png)
-![test_ping](./res/test_ping.png) 
-![test_incr](./res/test_incr.png)
+#QQ Group: 376389675
+
+![test_host](./res/test_host.png)    
+![test_ping](./res/test_ping.png)     
+![test_incr](./res/test_incr.png)    
 
 ## Copyright and licensing
 
