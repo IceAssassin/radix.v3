@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
-	"../redis"
+	"github.com/Tsiannian/radix.v3/redis"
 )
 
 func TestSubscribe(t *testing.T) {

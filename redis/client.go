@@ -8,14 +8,18 @@ import (
 	"reflect"
 	"time"
 	"bufio"
+	"sync"
 )
 
 // ErrPipelineEmpty is returned from PipeResp() to indicate that all commands
 // which were put into the pipeline have had their responses read
 var ErrPipelineEmpty = errors.New("pipeline queue empty")
+var ErrClientWorking = errors.New("client is working")
+var ErrClientClosed = errors.New("cleint is closed")
 
 // Client describes a Redis client.
 type Client struct {
+	sync.Mutex
 	conn         net.Conn
 	timeout      time.Duration
 	pending      []request
@@ -37,6 +41,11 @@ type Client struct {
 	readChan chan[]byte
 	writeChan chan []byte
 	respChan chan *Resp
+	futureChan chan *Future
+	sigClose 	chan int
+	wg 	sync.WaitGroup
+	isWorking bool
+	isClosing bool
 }
 
 // request describes a client's request to the redis server
@@ -56,6 +65,7 @@ func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
 
 	completed := make([]*Resp, 0, 10)
 	client := &Client{
+		Mutex: sync.Mutex{},
 		conn:          conn,
 		timeout:       timeout,
 		writeScratch:  make([]byte, 0, 128),
@@ -67,7 +77,11 @@ func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
 		readChan: 	make(chan []byte, 1024),
 		writeChan: 	make(chan []byte, 1024),
 		respChan: 	make(chan *Resp, 1024),
-
+		futureChan:	make(chan *Future, 102400),
+		sigClose: 	make(chan int, 1),
+		isWorking: 	false,
+		isClosing: 	false,
+		wg:		sync.WaitGroup{},
 	}
 	client.BeginTask()
 	return client, nil
@@ -78,63 +92,164 @@ func Dial(network, addr string) (*Client, error) {
 	return DialTimeout(network, addr, time.Duration(0))
 }
 
-func (c *Client) BeginTask() {
-	go c.readProcess(c.readChan, c.conn)
-	go c.writeProcess(c.writeChan, c.conn)
-	go c.respProcess(c.readChan, c.respChan)
+func (c *Client) BeginTask() error {
+	c.Lock()
+	defer c.Unlock()
+
+	if c.isWorking {
+		return ErrClientWorking
+	}
+	c.isWorking = true
+
+	go c.readProcess()
+	go c.writeProcess()
+	go c.respProcess()
+	go c.futureProcess()
+
+	return nil
 }
 
-func (c *Client) respProcess(recv chan[]byte, out chan *Resp) {
-	process := NewRespReader(recv, out)
-	process.beginTask()
-}
+func (c *Client) futureProcess() {
+	c.wg.Add(1)
+	defer c.wg.Done()
 
-func (c *Client) readProcess(read chan []byte, conn net.Conn) {
-	defer fmt.Println("readProcess exist")
-	reader := bufio.NewReaderSize(conn, 8192)
-	buffer := make([]byte, 8192)
-	for {
-		size, err := reader.Read(buffer)
-		if err != nil {
+	defer fmt.Println("futureProcess exist")
+	for c.isWorking {
+		select {
+		case <- c.sigClose:
 			return
+		default:
+			r, ok := <- c.respChan
+			if !ok {
+				return
+			}
+			f, ok := <- c.futureChan
+			if !ok {
+				return
+			}
+			f.resp <- r
 		}
-		send := []byte{}
-		send = append(buffer[0:size])
-		read <- send
 	}
 }
 
-func (c *Client) writeProcess(write chan[]byte, conn net.Conn) {
-	defer fmt.Println("writeProcess exist")
+func (c *Client) respProcess() {
+	process := NewRespReader(c)
+	process.beginTask()
+}
 
-	maxPending := 100
-	for {
-		send := <- write
-		remain := len(write)
-		for i := 0; i < remain && i < maxPending; i++ {
-			left := <- write
-			send = append(send, left...)
-		}
-		size, err := conn.Write(send)
-		if err != nil && size != len(send) {
+func (c *Client) readProcess() {
+	c.wg.Add(1)
+	defer c.wg.Done()
+
+	defer fmt.Println("readProcess exist")
+	reader := bufio.NewReaderSize(c.conn, 8192)
+	buffer := make([]byte, 8192)
+
+	for c.isWorking {
+		select {
+		case <- c.sigClose:
 			return
+		default:
+			size, err := reader.Read(buffer)
+			if err != nil {
+				return
+			}
+			send := []byte{}
+			send = append(send, buffer[0:size]...)
+			c.readChan <- send
+		}
+	}
+}
+
+func (c *Client) writeProcess() {
+	c.wg.Add(1)
+
+	defer c.wg.Done()
+	defer fmt.Println("writeProcess exist")
+	maxPending := 100
+	for c.isWorking {
+		select {
+		case <- c.sigClose:
+			return
+		default:
+			send, ok := <- c.writeChan
+			if !ok {
+				return
+			}
+			remain := len(c.writeChan)
+			for i := 0; i < remain && i < maxPending; i++ {
+				left := <- c.writeChan
+				send = append(send, left...)
+			}
+			size, err := c.conn.Write(send)
+			if err != nil && size != len(send) {
+				go c.Close(err)
+				return
+			}
 		}
 	}
 }
 
 // Close closes the connection.
-func (c *Client) Close() error {
-	return c.conn.Close()
+func (c *Client) Close(reason error) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if c.isClosing {
+		return ErrClientClosed
+	}
+
+	c.isClosing = true
+	//flush all cache data
+	c.flushCmd()
+	c.isWorking = false
+
+	close(c.sigClose)
+	close(c.writeChan)
+	close(c.futureChan)
+	close(c.respChan)
+	close(c.readChan)
+	// TO-DO: need a good way to let the read routine know we want to stop
+	err := c.conn.Close()
+	c.wg.Wait()
+	if err != nil {
+		fmt.Println("client closed due to", reason)
+	}
+	return err
 }
 
 // Cmd calls the given Redis command.
 func (c *Client) Cmd(cmd string, args ...interface{}) *Resp {
+	return c.FCmd(cmd, args...).GetResp()
+}
+
+func (c *Client) FCmd(cmd string, args ...interface{}) *Future {
+	c.Lock()
+	defer c.Unlock()
+
+	f := NewFuture()
+	if c.isClosing {
+		f.resp <- newRespIOErr(ErrClientClosed)
+		return f
+	}
 	err := c.writeRequest(request{cmd, args})
 	if err != nil {
-		return newRespIOErr(err)
+		f.resp <- newRespIOErr(err)
+	}else {
+		c.futureChan <- f
 	}
-	return nil
-	//return c.ReadResp()
+	return f
+}
+
+func (c *Client) flushCmd() *Resp {
+	f := NewFuture()
+	err := c.writeRequest(request{"PING", nil})
+	if err != nil {
+		f.resp <- newRespIOErr(err)
+	}else {
+		c.futureChan <- f
+	}
+	return f.GetResp()
 }
 
 // PipeAppend adds the given call to the pipeline queue.
@@ -238,7 +353,7 @@ outer:
 	}
 	if err != nil {
 		c.LastCritical = err
-		c.Close()
+		c.Close(err)
 		return err
 	}
 	return nil

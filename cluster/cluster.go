@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"../pool"
-	"../redis"
+	"github.com/Tsiannian/radix.v3/pool"
+	"github.com/Tsiannian/radix.v3/redis"
 )
 
 const numSlots = 16384

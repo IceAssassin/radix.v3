@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 	"time"
-	"../../cluster"
+	"github.com/Tsiannian/radix.v3/cluster"
 )
 
 func randString() string {

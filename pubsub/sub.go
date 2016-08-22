@@ -6,7 +6,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"../redis"
+	"github.com/Tsiannian/radix.v3/redis"
 )
 
 // SubRespType describes the type of the response  being returned from one of

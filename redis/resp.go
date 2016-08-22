@@ -72,11 +72,25 @@ type Resp struct {
 	Err error
 }
 
+type Future struct {
+	resp chan *Resp
+	outTime int64
+	inTime int64
+}
+
+func (f *Future) GetResp() *Resp {
+	return <- f.resp
+}
+
 // NewResp takes the given value and interprets it into a resp encoded byte
 // stream
 func NewResp(v interface{}) *Resp {
 	r := format(v, false)
 	return &r
+}
+
+func NewFuture() *Future {
+	return &Future{resp:make(chan *Resp, 1)}
 }
 
 // NewRespSimple is like NewResp except it encodes its string as a resp
@@ -110,51 +124,63 @@ func newRespIOErr(err error) *Resp {
 // RespReader is a wrapper around an io.Reader which will read Resp messages off
 // of the io.Reader
 type RespReader struct {
-	data chan []byte
-	resp chan *Resp
+	client *Client
 	wait []byte
 }
 
 // NewRespReader creates and returns a new RespReader which will read from the
 // given io.Reader. Once passed in the io.Reader shouldn't be read from by any
 // other processes
-func NewRespReader(d chan []byte, r chan *Resp)  *RespReader{
-	return &RespReader{ data:d, resp:r}
+func NewRespReader(c *Client)  *RespReader{
+	return &RespReader{ client : c }
 }
 
 func (rr *RespReader) readLine(begin int, delimEnd  byte) []byte {
-	recv := <- rr.data
-	rr.wait = append(rr.wait, recv...)
 	for i := range rr.wait[begin:] {
-		//fmt.Println("check pos", i, rr.wait[i], delimEnd, string(rr.wait[i]), string(delimEnd), delim[0], delim[1])
-		if rr.wait[i] == delimEnd {
-			n := begin+i +1 // the i begin with 0, the size begin with i
+		if rr.wait[begin+i] == delimEnd {
+			n := begin+i+1 // the i begin with 0, the size begin with i
 			ret := make([]byte, n)
 			copy(ret, rr.wait[0:n])
 			rr.wait = rr.wait[n:]
-			fmt.Println("ret line is", string(ret))
 			return ret
 		}
 	}
 	nextBegin := len(rr.wait)
+	recv, ok := <- rr.client.readChan
+	if !ok {
+		return nil
+	}
+	rr.wait = append(rr.wait, recv...)
 	return rr.readLine(nextBegin, delimEnd)
 }
 
 func (rr *RespReader) beginTask()  {
+	rr.client.wg.Add(1)
+
+	defer rr.client.wg.Done()
+
 	defer fmt.Println("respReader task exist")
 
-	for {
-		resp, err := rr.readResp()
-		if err != nil {
-			fmt.Println("resp error with", resp, err)
+	for rr.client.isWorking {
+		select {
+		case <- rr.client.sigClose:
+			return
+		default:
+			resp, err := rr.readResp()
+			if err != nil {
+				go rr.client.Close(err)
+				return
+			}
+			rr.client.respChan <- resp
 		}
-		rr.resp <- resp
 	}
 }
 
 func (rr *RespReader) readResp() (*Resp, error) {
 	line := rr.readLine(0, delimEnd)
-	fmt.Println("read line is", string(line), "len", len(line))
+	if line == nil {
+		return &Resp{}, errBadType
+	}
 	switch line[0] {
 	case simpleStrPrefix[0]:
 		return rr.readSimpleStr(line)

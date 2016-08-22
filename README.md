@@ -89,9 +89,14 @@ Here are some of the major changes since V1:
 
 * More functionality in cluster
 
-##TO-DO: V3
-
+## V3
 * add future support
+
+* FCmd is added, with incredible ops
+
+* Cmd now is groutine safe, and benefit from FCmd
+
+* a toy program show the FCmd usage, and the redis limit
 
 ## Copyright and licensing
 

@@ -1,7 +1,7 @@
 package pool
 
 import (
-	"../redis"
+	"github.com/Tsiannian/radix.v3/redis"
 )
 
 // Pool is a simple connection pool for redis Clients. It will create a small
