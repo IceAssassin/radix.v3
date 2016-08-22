@@ -98,6 +98,10 @@ Here are some of the major changes since V1:
 
 * a toy program show the FCmd usage, and the redis limit
 
+![test_host](./res/test_host.png)
+![test_ping](./res/test_ping.png) 
+![test_incr](./res/test_incr.png)
+
 ## Copyright and licensing
 
 Unless otherwise noted, the source files are distributed under the *MIT License*
